@@ -176,6 +176,7 @@ fn run() -> Result<()> {
 	}
 
 	let tf_custom_dir = game_dir.join("tf").join("custom");
+	let tf_cfg_dir = game_dir.join("tf").join("cfg");
 
 	info!("Clearing custom");
 	clear_custom(&tf_custom_dir);
@@ -223,7 +224,7 @@ fn run() -> Result<()> {
 
 		let config_preset = config_presets.join(&cfg.settings.preset);
 		if config_preset.is_dir() {
-			copy_cfg_to_tf2(config_preset, &tf_custom_dir, cfg.settings.can_override)?;
+			copy_cfg_to_tf2(config_preset, &tf_cfg_dir, cfg.settings.can_override)?;
 		}
 	}
 
