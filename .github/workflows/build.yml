@@ -7,7 +7,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Windows exe and upload to release
+    name: Build and upload
     runs-on: windows-latest
 
     steps:
@@ -21,7 +21,7 @@ jobs:
         run: cargo build --release
 
       - name: Upload
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: target/release/cfg-manager.exe
         env:
