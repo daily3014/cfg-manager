@@ -28,7 +28,7 @@ huds/
 	ToonHUD
 	LightHUD
 ```
-The shared folder can hold both groups of mods and regular mods, groups are determined by not containing folders like materials, maps, resource,scripts, sound, models
+The shared folder can hold both groups of mods and regular mods, groups are determined by not containing folders with any of the following names: materials, maps, resource, scripts, sound, models
 
 ## How it works
 On launch, the app:
