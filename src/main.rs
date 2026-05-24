@@ -3,13 +3,14 @@ use log::{error, info};
 use serde::Deserialize;
 use std::{
 	iter::once,
-	os::windows::fs::{symlink_dir, symlink_file},
 	path::{Path, PathBuf},
 };
 use windows::{
 	Win32::UI::WindowsAndMessaging::{MB_OK, MessageBoxW},
 	core::PCWSTR,
 };
+
+use crate::vfs::{create_symlink, walk_dir};
 mod steam;
 mod vfs;
 
@@ -17,7 +18,6 @@ mod vfs;
 struct Config {
 	settings: Settings,
 }
-
 #[derive(Deserialize, Debug)]
 struct Settings {
 	hud: String,
@@ -43,94 +43,57 @@ fn parse_config(path: impl AsRef<Path>) -> Result<Config> {
 	toml::from_str(&content).context("Invalid configuration format")
 }
 
-fn clear_custom(dir: impl AsRef<Path>) {
-	if let Ok(entries) = std::fs::read_dir(dir) {
-		for entry in entries.flatten() {
-			let path = entry.path();
-
-			if let Some(name) = path.file_name()
-				&& (name == "workshop" || name == "readme.txt")
-				&& path.is_dir()
-			{
-				continue;
-			}
-
-			if path.is_dir() {
-				let _ = std::fs::remove_dir_all(path);
-			} else if path.is_file() {
-				let _ = std::fs::remove_file(path);
-			}
+fn clear_files(tf_custom_dir: &Path, tf_cfg_dir: &Path) -> Result<()> {
+	walk_dir(tf_custom_dir, false, &mut |path| {
+		if let Some(name) = path.file_name()
+			&& (name == "workshop" || name == "readme.txt")
+		{
+			return Ok(());
 		}
-	}
+
+		vfs::delete_file(path)
+	})?;
+
+	walk_dir(tf_cfg_dir, false, &mut |path| {
+		let metadata = path.symlink_metadata()?;
+
+		if metadata.file_type().is_symlink() {
+			return vfs::delete_file(path);
+		}
+
+		Ok(())
+	})
 }
 
-fn create_symlink(file: impl AsRef<Path>, target: impl AsRef<Path>) -> Result<()> {
-	let file = file.as_ref();
-	let target = target.as_ref();
-
-	if file.is_dir() {
-		symlink_dir(file, target)?;
-	} else if file.is_file() {
-		symlink_file(file, target)?;
-	}
-
-	Ok(())
-}
-
-fn copy_dir_as_symlink(dir: impl AsRef<Path>, target: impl AsRef<Path>) -> Result<()> {
-	let dir = dir.as_ref();
-	let target = target.as_ref();
-
-	if !dir.is_dir() {
-		return Err(anyhow!("Source is not a directory: {}", dir.display()));
-	}
-
-	for entry in std::fs::read_dir(dir)? {
-		let Ok(entry) = entry else { continue };
-		let path = entry.path();
-		let target = target.join(entry.file_name());
-
-		create_symlink(&path, &target)
-			.with_context(|| format!("Failed to create symlink for '{}'", path.display()))?;
-	}
-
-	Ok(())
-}
-
-fn copy_cfg_to_tf2(
-	preset: impl AsRef<Path>,
-	custom_dir: impl AsRef<Path>,
-	can_override: bool,
-) -> Result<()> {
-	let preset = preset.as_ref();
-	let custom_dir = custom_dir.as_ref();
-
-	if !preset.is_dir() {
-		return Err(anyhow!("Source is not a file: {}", preset.display()));
-	}
-
+fn copy_cfg_to_tf2(preset: &Path, tf_cfg_dir: &Path, can_override: bool) -> Result<()> {
 	let cfg_addons = preset.join("cfg");
-	if can_override && cfg_addons.is_dir() {
-		for entry in std::fs::read_dir(cfg_addons)? {
-			let Ok(entry) = entry else { continue };
-			let path = entry.path();
-			let target = custom_dir.join(entry.file_name());
 
-			if path.is_file() {
-				std::fs::copy(&path, &target)?;
+	if can_override && cfg_addons.is_dir() {
+		vfs::walk_dir(&cfg_addons, false, &mut |src| {
+			if let Ok(relative) = src.strip_prefix(&cfg_addons) {
+				let target = tf_cfg_dir.join(relative);
+
+				// Symlinking will allow us to later delete them easily
+				vfs::delete_file(&target)?; // if it already exists, we need to delete it,
+				create_symlink(src, target)?;
 			}
-		}
+			Ok(())
+		})?;
 	}
 
 	let custom_addons = preset.join("custom");
 	if custom_addons.is_dir() {
-		for entry in std::fs::read_dir(custom_addons)? {
-			let Ok(entry) = entry else { continue };
-			let path = entry.path();
-			let target = custom_dir.join(entry.file_name());
+		vfs::walk_dir(&custom_addons, false, &mut |src| {
+			if let Some(file_name) = src.file_name()
+				&& let Some(tf_dir) = tf_cfg_dir.parent()
+			{
+				let tf_custom_dir = tf_dir.join("custom");
+				let target = tf_custom_dir.join(file_name);
 
-			create_symlink(&path, &target)?;
-		}
+				vfs::create_symlink(src, &target)?;
+			}
+			Ok(())
+		})?;
 	}
 
 	Ok(())
@@ -157,44 +120,40 @@ fn run() -> Result<()> {
 		"Could not parse the config file. Ensure that settings.toml exists and wasn't corrupted",
 	)?;
 
-	let Some(game_dir) = steam::get_game_dir(440) else {
-		return Err(anyhow!(
-			"Could not find the game directory, ensure that the game is installed correctly"
-		));
-	};
+	let game_dir = steam::get_game_dir(440).context(
+		"Could not find the game directory, ensure that the game is installed correctly",
+	)?;
 
 	if steam::is_game_running(440) {
 		return Err(anyhow!(
-			"Game is currently running. Please close it before running this application."
+			"Game is currently running. Please close it before running cfg-manager."
 		));
 	}
 
 	if steam::is_game_updating(440) {
 		return Err(anyhow!(
-			"Game is currently updating. Please wait for the update to finish before running this application."
+			"Game is currently updating. Please wait for the update to finish before running cfg-manager."
 		));
 	}
 
 	let tf_custom_dir = game_dir.join("tf").join("custom");
 	let tf_cfg_dir = game_dir.join("tf").join("cfg");
 
-	info!("Clearing custom");
-	clear_custom(&tf_custom_dir);
+	info!("Clearing custom and cfg");
+	clear_files(&tf_custom_dir, &tf_cfg_dir)?;
 
 	let shared_custom = customs_dir.join("shared");
 	if shared_custom.is_dir() {
 		info!("Copying shared custom files");
-		for entry in std::fs::read_dir(shared_custom)?.flatten() {
-			let path = entry.path();
-
-			// For groups of VPKs we need to copy the files since
-			// the virtual file system only goes one level deep
-			if vfs::dir_is_mod(&path) || vfs::file_is_vpk(&path) {
-				create_symlink(&path, &tf_custom_dir)?;
+		vfs::walk_dir(&shared_custom, false, &mut |path| {
+			if vfs::dir_is_mod(path) || vfs::file_is_vpk(path) {
+				vfs::create_symlink(path, &tf_custom_dir)?;
 			} else {
-				copy_dir_as_symlink(&path, &tf_custom_dir)?;
+				vfs::copy_dir_as_symlink(path, &tf_custom_dir)?;
 			}
-		}
+
+			Ok(())
+		})?;
 	}
 
 	if !cfg.settings.hud.is_empty() {
@@ -208,7 +167,7 @@ fn run() -> Result<()> {
 			));
 		}
 
-		create_symlink(&hud, tf_custom_dir.join(&cfg.settings.hud))
+		vfs::create_symlink(&hud, tf_custom_dir.join(&cfg.settings.hud))
 			.context("Failed to create symlink for HUD")?;
 	}
 
@@ -224,13 +183,13 @@ fn run() -> Result<()> {
 
 		let config_preset = config_presets.join(&cfg.settings.preset);
 		if config_preset.is_dir() {
-			copy_cfg_to_tf2(config_preset, &tf_cfg_dir, cfg.settings.can_override)?;
+			copy_cfg_to_tf2(&config_preset, &tf_cfg_dir, cfg.settings.can_override)?;
 		}
 	}
 
 	let custom_preset = customs_dir.join(&cfg.settings.preset);
 	if custom_preset.is_dir() {
-		copy_dir_as_symlink(custom_preset, &tf_custom_dir)?;
+		vfs::copy_dir_as_symlink(&custom_preset, &tf_custom_dir)?;
 	}
 
 	info!("Done!");

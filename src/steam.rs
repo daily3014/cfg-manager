@@ -2,13 +2,11 @@ use std::path::PathBuf;
 use windows_registry::{CURRENT_USER, Value};
 
 pub fn get_steam_dir() -> Option<PathBuf> {
-	let steam_path = CURRENT_USER
+	CURRENT_USER
 		.open("SOFTWARE\\Valve\\Steam")
-		.ok()?
-		.get_string("SteamPath")
-		.ok()?;
-
-	Some(PathBuf::from(steam_path))
+		.and_then(|key| key.get_string("SteamPath"))
+		.map(PathBuf::from)
+		.ok()
 }
 
 pub fn get_game_name(id: u32) -> Option<String> {
