@@ -67,6 +67,10 @@ fn clear_files(tf_custom_dir: &Path, tf_cfg_dir: &Path) -> Result<()> {
 
 fn copy_cfg_to_tf2(preset: &Path, tf_cfg_dir: &Path, can_override: bool) -> Result<()> {
 	let cfg_addons = preset.join("cfg");
+	let tf_custom_dir = tf_cfg_dir
+		.parent()
+		.map(|path| path.join("custom"))
+		.ok_or(anyhow!("Failed to get parent of tf custom directory"))?;
 
 	if can_override && cfg_addons.is_dir() {
 		vfs::walk_dir(&cfg_addons, false, &mut |src| {
@@ -75,7 +79,7 @@ fn copy_cfg_to_tf2(preset: &Path, tf_cfg_dir: &Path, can_override: bool) -> Resu
 
 				// Symlinking will allow us to later delete them easily
 				vfs::delete_file(&target)?; // if it already exists, we need to delete it,
-				create_symlink(src, target)?;
+				create_symlink(src, &target)?;
 			}
 			Ok(())
 		})?;
@@ -84,10 +88,7 @@ fn copy_cfg_to_tf2(preset: &Path, tf_cfg_dir: &Path, can_override: bool) -> Resu
 	let custom_addons = preset.join("custom");
 	if custom_addons.is_dir() {
 		vfs::walk_dir(&custom_addons, false, &mut |src| {
-			if let Some(file_name) = src.file_name()
-				&& let Some(tf_dir) = tf_cfg_dir.parent()
-			{
-				let tf_custom_dir = tf_dir.join("custom");
+			if let Some(file_name) = src.file_name() {
 				let target = tf_custom_dir.join(file_name);
 
 				vfs::create_symlink(src, &target)?;
@@ -167,7 +168,7 @@ fn run() -> Result<()> {
 			));
 		}
 
-		vfs::create_symlink(&hud, tf_custom_dir.join(&cfg.settings.hud))
+		vfs::create_symlink(&hud, &tf_custom_dir.join(&cfg.settings.hud))
 			.context("Failed to create symlink for HUD")?;
 	}
 

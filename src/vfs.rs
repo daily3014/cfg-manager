@@ -2,7 +2,12 @@ use anyhow::{Context, Result, anyhow};
 use std::os::windows::fs::{symlink_dir, symlink_file};
 use std::path::Path;
 
-pub fn create_symlink(file: &Path, target: impl AsRef<Path>) -> Result<()> {
+pub fn create_symlink(file: &Path, target: &Path) -> Result<()> {
+	if file.is_symlink() {
+		let original = file.read_link()?;
+		return create_symlink(&original, target);
+	}
+
 	if file.is_dir() {
 		symlink_dir(file, target)?;
 	} else if file.is_file() {
@@ -84,23 +89,16 @@ pub fn dir_is_mod(dir: &Path) -> bool {
 		return false;
 	};
 
-	entries.flatten().any(|entry| {
-		let Ok(file_type) = entry.file_type() else {
-			return false;
-		};
-
-		if file_type.is_dir() {
-			let name = entry.file_name();
-			let name_str = name.to_string_lossy();
-
+	entries
+		.flatten()
+		.filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_dir()))
+		.filter_map(|entry| entry.file_name().into_string().ok())
+		.any(|name| {
 			matches!(
-				name_str.as_ref(),
+				name.as_str(),
 				"materials" | "maps" | "resource" | "scripts" | "sound" | "models"
 			)
-		} else {
-			false
-		}
-	})
+		})
 }
 
 pub fn file_is_vpk(file: &Path) -> bool {
